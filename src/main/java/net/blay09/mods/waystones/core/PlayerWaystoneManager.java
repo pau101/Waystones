@@ -1,5 +1,6 @@
 package net.blay09.mods.waystones.core;
 
+import com.mojang.datafixers.util.Pair;
 import net.blay09.mods.waystones.api.IWaystone;
 import net.blay09.mods.waystones.api.WaystoneActivatedEvent;
 import net.blay09.mods.waystones.block.WaystoneBlock;
@@ -15,12 +16,14 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.Direction;
+import net.minecraft.util.math.AxisAlignedBB;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.text.TextFormatting;
 import net.minecraft.util.text.TranslationTextComponent;
 import net.minecraft.world.IBlockReader;
 import net.minecraft.world.World;
+import net.minecraft.world.gen.Heightmap;
 import net.minecraft.world.server.ServerWorld;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.LogicalSide;
@@ -28,8 +31,11 @@ import net.minecraftforge.fml.network.PacketDistributor;
 import net.minecraftforge.fml.server.ServerLifecycleHooks;
 
 import javax.annotation.Nullable;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Function;
 
 public class PlayerWaystoneManager {
 
@@ -136,6 +142,11 @@ public class PlayerWaystoneManager {
             return false;
         }
 
+        if (!teleportToWaystone(player, waystone)) {
+            player.sendStatusMessage(new TranslationTextComponent("chat.waystones.obstructed").applyTextStyle(TextFormatting.RED), false);
+            return false;
+        }
+
         if (warpMode.consumesItem() && !player.abilities.isCreativeMode) {
             warpItem.shrink(1);
         }
@@ -154,7 +165,6 @@ public class PlayerWaystoneManager {
             player.addExperienceLevel(-xpLevelCost);
         }
 
-        teleportToWaystone(player, waystone);
         return true;
     }
 
@@ -188,27 +198,43 @@ public class PlayerWaystoneManager {
         }
     }
 
-    private static void teleportToWaystone(ServerPlayerEntity player, IWaystone waystone) {
+    private static boolean teleportToWaystone(ServerPlayerEntity player, IWaystone waystone) {
         BlockPos sourcePos = player.getPosition();
-        BlockPos pos = waystone.getPos();
-        BlockPos targetPos;
-        Direction targetDir;
 
         MinecraftServer server = player.getServer();
+        ServerWorld currentWorld = player.getServerWorld();
         ServerWorld targetWorld = Objects.requireNonNull(server).getWorld(waystone.getDimensionType());
-        BlockState state = targetWorld.getBlockState(pos);
-        if (state.getBlock() instanceof WaystoneBlock) {
-            Direction direction = state.get(WaystoneBlock.FACING);
-            targetPos = pos.offset(direction);
-            targetDir = direction;
-        } else {
-            targetPos = pos;
-            targetDir = Direction.NORTH;
-        }
+        return getOpenPosition(targetWorld, player, waystone.getPos()).map(p -> {
+            BlockPos targetPos = p.getFirst();
+            Direction targetDir = p.getSecond();
+            player.teleport(targetWorld, targetPos.getX() + 0.5, targetPos.getY() + 0.5, targetPos.getZ() + 0.5, targetDir.getHorizontalAngle(), player.rotationPitch);
+            NetworkHandler.channel.send(PacketDistributor.TRACKING_CHUNK.with(() -> currentWorld.getChunkAt(sourcePos)), new TeleportEffectMessage(sourcePos));
+            NetworkHandler.channel.send(PacketDistributor.TRACKING_CHUNK.with(() -> targetWorld.getChunkAt(targetPos)), new TeleportEffectMessage(targetPos));
+            return p;
+        }).isPresent();
+    }
 
-        player.teleport(targetWorld, targetPos.getX() + 0.5, targetPos.getY() + 0.5, targetPos.getZ() + 0.5, targetDir.getHorizontalAngle(), player.rotationPitch);
-        NetworkHandler.channel.send(PacketDistributor.TRACKING_CHUNK.with(() -> player.world.getChunkAt(sourcePos)), new TeleportEffectMessage(sourcePos));
-        NetworkHandler.channel.send(PacketDistributor.TRACKING_CHUNK.with(() -> player.world.getChunkAt(targetPos)), new TeleportEffectMessage(targetPos));
+    private static Optional<Pair<BlockPos, Direction>> getOpenPosition(World world, PlayerEntity player, BlockPos pos) {
+        BlockState state = world.getBlockState(pos);
+        Direction preferred = state.has(WaystoneBlock.FACING) ? state.get(WaystoneBlock.FACING) : Direction.NORTH;
+        for (Function<BlockPos, BlockPos> func : Arrays.<Function<BlockPos, BlockPos>>asList(Function.identity(), BlockPos::up, p -> world.getHeight(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, p))) {
+            for (Direction dir : Arrays.asList(preferred, preferred.getOpposite(), preferred.rotateY(), preferred.rotateYCCW())) {
+                BlockPos p = func.apply(pos.offset(dir));
+                if (p.getY() > world.getActualHeight() || Math.abs(p.getY() - pos.getY()) > 8) {
+                    continue;
+                }
+                float w = player.getWidth() / 2;
+                float h = player.getHeight();
+                double x = p.getX() + 0.5;
+                double y = p.getY();
+                double z = p.getZ() + 0.5;
+                AxisAlignedBB bb = new AxisAlignedBB(x - w, y, z - w, x + w, y + h, z + w);
+                if (world.areCollisionShapesEmpty(bb)) {
+                    return Optional.of(Pair.of(p, dir));
+                }
+            }
+        }
+        return Optional.empty();
     }
 
     public static void deactivateWaystone(PlayerEntity player, IWaystone waystone) {
