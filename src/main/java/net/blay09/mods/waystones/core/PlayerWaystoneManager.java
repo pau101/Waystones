@@ -14,6 +14,8 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.player.ServerPlayerEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.network.play.server.SPlayEntityEffectPacket;
+import net.minecraft.potion.EffectInstance;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.Direction;
 import net.minecraft.util.math.AxisAlignedBB;
@@ -208,6 +210,10 @@ public class PlayerWaystoneManager {
             BlockPos targetPos = p.getFirst();
             Direction targetDir = p.getSecond();
             player.teleport(targetWorld, targetPos.getX() + 0.5, targetPos.getY() + 0.5, targetPos.getZ() + 0.5, targetDir.getHorizontalAngle(), player.rotationPitch);
+            for (EffectInstance effectinstance : player.getActivePotionEffects()) {
+                player.connection.sendPacket(new SPlayEntityEffectPacket(player.getEntityId(), effectinstance));
+            }
+            player.func_195399_b(player.experienceLevel);
             NetworkHandler.channel.send(PacketDistributor.TRACKING_CHUNK.with(() -> currentWorld.getChunkAt(sourcePos)), new TeleportEffectMessage(sourcePos));
             NetworkHandler.channel.send(PacketDistributor.TRACKING_CHUNK.with(() -> targetWorld.getChunkAt(targetPos)), new TeleportEffectMessage(targetPos));
             return p;
