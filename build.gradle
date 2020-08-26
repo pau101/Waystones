@@ -54,6 +54,10 @@ minecraft {
     }
 }
 
+jar {
+    classifier 'xlife'
+}
+
 repositories {
     maven {
         url "https://minecraft.curseforge.com/api/maven/"
